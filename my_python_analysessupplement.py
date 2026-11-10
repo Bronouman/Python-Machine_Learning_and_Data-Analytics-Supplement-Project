@@ -46,7 +46,7 @@ def tile_plot(mat, x_levels, y_levels_top_to_bottom, xlabel, ylabel, title, labe
     ax.set_ylabel(ylabel)
     ax.tick_params(length=0, rotation=0)
     fig.tight_layout()
-    plt.show()
+    plt.savefig("plot.png")
 
 
 # ----------------------------------------------------------------
@@ -168,7 +168,7 @@ ax.legend(
     frameon=False,
 )
 fig.tight_layout()
-plt.show()
+plt.savefig("plot.png")
 
 # ----------------------------------------------------------------
 # ANALYSIS 2: DISTANCEFROMHOME DISTRIBUTION BY ATTRITION
@@ -236,7 +236,7 @@ ax.legend(
     frameon=False,
 )
 fig.tight_layout()
-plt.show()
+plt.savefig("plot.png")
 
 # ----------------------------------------------------------------
 # ANALYSIS 3: HYPOTHESIS TESTING (CHI-SQUARE & MANN-WHITNEY U)
@@ -328,7 +328,7 @@ ax.legend(
     frameon=False,
 )
 fig.tight_layout()
-plt.show()
+plt.savefig("plot.png")
 
 # ----------------------------------------------------------------
 # ANALYSIS 4: COMBINED PATTERN (ANOVA & FACETED VIOLIN)
@@ -431,7 +431,7 @@ fig.legend(
     frameon=False,
 )
 fig.tight_layout(rect=(0, 0.17, 1, 1))
-plt.show()
+plt.savefig("plot.png")
 
 # ----------------------------------------------------------------
 # ANALYSIS 5: DECISION TREES FOR ATTRITION PREDICTION
@@ -544,7 +544,7 @@ plot_tree(
 )
 ax.set_title("Decision Tree: Employee Attrition", fontweight="bold")
 fig.tight_layout()
-plt.show()
+plt.savefig("plot.png")
 
 pred = dt_model.predict(X_test)
 if dt_model.n_classes_ == 2:
@@ -632,4 +632,4 @@ ax.set_xlabel("Specificity")
 ax.set_ylabel("Sensitivity")
 ax.set_title(f"ROC Curve | AUC = {round(auc_val, 4)}", fontweight="bold")
 fig.tight_layout()
-plt.show()
+plt.savefig("plot.png")

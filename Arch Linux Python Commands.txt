@@ -1,6 +1,7 @@
+#Packages Installation
 sudo pacman -S python python-pip python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 tk
 
-#Alternative: Virtual Environment
+#Alternative for Packages Installation: Virtual Environment
 python -m venv venv
 source venv/bin/activate
 pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6

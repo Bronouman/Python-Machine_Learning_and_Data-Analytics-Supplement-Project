@@ -1,10 +1,10 @@
 #Packages Installation
-sudo pacman -S python python-pip python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 tk
+sudo pacman -S python python-pip python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 tk torch
 
 #Alternative for Packages Installation: Virtual Environment
 python -m venv venv
 source venv/bin/activate
-pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6
+pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6 torch
 #standalone analyses only numeric output NO GUI
 python my_python_analysessupplement.py # Compile
 my_python_analysessupplement.py

@@ -213,10 +213,17 @@ sns.boxplot(
         "markersize": 3,
     },
 )
+# centre each label on its box (seaborn versions differ in how they dodge boxes when hue == x)
+_bx = sorted(
+    float(b.get_path().vertices[:, 0].min() + b.get_path().vertices[:, 0].max()) / 2
+    for b in ax.patches
+)
+if len(_bx) != len(df2_stats):
+    _bx = list(range(len(df2_stats)))
 for i, r in enumerate(df2_stats.itertuples()):
     ax.annotate(
         f"Mean: {r.mean_dist:g}",
-        (i, r.mean_dist),
+        (_bx[i], r.mean_dist),
         xytext=(0, 6),
         textcoords="offset points",
         ha="center",
@@ -508,128 +515,391 @@ y_train = (train_balanced["attrition"].astype(str).to_numpy() == "Left").astype(
 X_test = design(test_set)
 y_test = (test_set["attrition"].astype(str).to_numpy() == "Left").astype(int)
 
-dt_model = DecisionTreeClassifier(
-    criterion="gini",
-    min_samples_split=20,
-    min_samples_leaf=7,
-    ccp_alpha=0.002,
-    random_state=42,
-)
-dt_model.fit(X_train, y_train)
-
-print("\n--- Analysis 5: Decision Tree Summary ---")
-print(
-    f"Decision tree (n = {len(X_train)}): depth = {dt_model.get_depth()}, "
-    f"leaves = {dt_model.get_n_leaves()}, nodes = {dt_model.tree_.node_count}"
-)
-imp = pd.Series(dt_model.feature_importances_ * 100, index=X_train.columns).sort_values(
-    ascending=False
-)
-print("\nVariable importance:")
-print(imp.round(0).to_string())
-print("\nTree rules:")
-print(export_text(dt_model, feature_names=list(X_train.columns), show_weights=True))
-
-fig, ax = plt.subplots(figsize=(14, 8))
-plot_tree(
-    dt_model,
-    feature_names=list(X_train.columns),
-    class_names=ATT_LEVELS,
-    filled=True,
-    impurity=False,
-    proportion=True,
-    rounded=True,
-    fontsize=8,
-    ax=ax,
-)
-ax.set_title("Decision Tree: Employee Attrition", fontweight="bold")
-fig.tight_layout()
-plt.savefig("plot.png")
-
-pred = dt_model.predict(X_test)
-if dt_model.n_classes_ == 2:
-    pred_probs = dt_model.predict_proba(X_test)[:, 1]
-else:
-    pred_probs = np.full(len(X_test), float(dt_model.classes_[0] == 1))
-
-# --- Confusion matrix & caret-style statistics (positive class = Left) ---
-cm = confusion_matrix(y_test, pred, labels=[0, 1])
-tn, fp, fn, tp = int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1])
-n = tn + fp + fn + tp
+import os
+import sys
 
 
-def sdiv(a, b):
-    return a / b if b else float("nan")
+def flush_stdin():
+    """Drop stray keystrokes so they cannot dismiss the next plot window."""
+    try:
+        import termios
+
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
 
 
-acc = (tp + tn) / n
-ci = stats.binomtest(tp + tn, n).proportion_ci(confidence_level=0.95, method="exact")
-nir = max(tp + fn, tn + fp) / n
-acc_p = stats.binomtest(tp + tn, n, p=nir, alternative="greater").pvalue
-pe = ((tp + fn) * (tp + fp) + (tn + fp) * (tn + fn)) / (n * n)
-kappa = sdiv(acc - pe, 1 - pe)
-if (fp + fn) > 0:
-    mc_stat = (abs(fp - fn) - 1) ** 2 / (fp + fn)
-    mc_p = stats.chi2.sf(mc_stat, 1)
-else:
-    mc_p = float("nan")
-sens = sdiv(tp, tp + fn)
-spec = sdiv(tn, tn + fp)
-ppv = sdiv(tp, tp + fp)
-npv = sdiv(tn, tn + fn)
-prev = (tp + fn) / n
-det_rate = tp / n
-det_prev = (tp + fp) / n
-bal_acc = (sens + spec) / 2
+def evaluate_model(model_label, y_test, pred, pred_probs, roc_tag=""):
+    """Shared evaluation (confusion matrix, caret-style stats, AUC, ROC) - same code as before."""
+    cm = confusion_matrix(y_test, pred, labels=[0, 1])
+    tn, fp, fn, tp = int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1])
+    n = tn + fp + fn + tp
 
-print("\n--- Analysis 5: Confusion Matrix ---")
-print("Confusion Matrix and Statistics\n")
-print("          Reference")
-print("Prediction Stayed Left")
-print(f"    Stayed {tn:>6} {fn:>4}")
-print(f"    Left   {fp:>6} {tp:>4}\n")
-print(f"               Accuracy : {acc:.4f}")
-print(f"                 95% CI : ({ci.low:.4f}, {ci.high:.4f})")
-print(f"    No Information Rate : {nir:.4f}")
-print(f"    P-Value [Acc > NIR] : {fmt_p(acc_p)}\n")
-print(f"                  Kappa : {kappa:.4f}\n")
-print(f" Mcnemar's Test P-Value : {fmt_p(mc_p) if not np.isnan(mc_p) else 'NA'}\n")
-print(f"            Sensitivity : {sens:.4f}")
-print(f"            Specificity : {spec:.4f}")
-print(f"         Pos Pred Value : {ppv:.4f}")
-print(f"         Neg Pred Value : {npv:.4f}")
-print(f"             Prevalence : {prev:.4f}")
-print(f"         Detection Rate : {det_rate:.4f}")
-print(f"   Detection Prevalence : {det_prev:.4f}")
-print(f"      Balanced Accuracy : {bal_acc:.4f}\n")
-print("       'Positive' Class : Left\n")
+    def sdiv(a, b):
+        return a / b if b else float("nan")
 
-cm_df = pd.DataFrame(
-    cm.T, index=ATT_LEVELS, columns=ATT_LEVELS
-)  # rows = Predicted, cols = Actual
-tile_plot(
-    cm_df,
-    ATT_LEVELS,
-    ["Left", "Stayed"],
-    "Actual",
-    "Predicted",
-    "Confusion Matrix \u2014 Decision Tree Prediction",
-    16,
-)
+    acc = (tp + tn) / n
+    ci = stats.binomtest(tp + tn, n).proportion_ci(
+        confidence_level=0.95, method="exact"
+    )
+    nir = max(tp + fn, tn + fp) / n
+    acc_p = stats.binomtest(tp + tn, n, p=nir, alternative="greater").pvalue
+    pe = ((tp + fn) * (tp + fp) + (tn + fp) * (tn + fn)) / (n * n)
+    kappa = sdiv(acc - pe, 1 - pe)
+    if (fp + fn) > 0:
+        mc_stat = (abs(fp - fn) - 1) ** 2 / (fp + fn)
+        mc_p = stats.chi2.sf(mc_stat, 1)
+    else:
+        mc_p = float("nan")
+    sens = sdiv(tp, tp + fn)
+    spec = sdiv(tn, tn + fp)
+    ppv = sdiv(tp, tp + fp)
+    npv = sdiv(tn, tn + fn)
+    prev = (tp + fn) / n
+    det_rate = tp / n
+    det_prev = (tp + fp) / n
+    bal_acc = (sens + spec) / 2
 
-auc_val = roc_auc_score(y_test, pred_probs)
-print("\n--- Analysis 5: Model AUC ---")
-print("AUC:", round(auc_val, 4), "")
+    print("\n--- Analysis 5: Confusion Matrix ---")
+    print("Confusion Matrix and Statistics\n")
+    print("          Reference")
+    print("Prediction Stayed Left")
+    print(f"    Stayed {tn:>6} {fn:>4}")
+    print(f"    Left   {fp:>6} {tp:>4}\n")
+    print(f"               Accuracy : {acc:.4f}")
+    print(f"                 95% CI : ({ci.low:.4f}, {ci.high:.4f})")
+    print(f"    No Information Rate : {nir:.4f}")
+    print(f"    P-Value [Acc > NIR] : {fmt_p(acc_p)}\n")
+    print(f"                  Kappa : {kappa:.4f}\n")
+    print(f" Mcnemar's Test P-Value : {fmt_p(mc_p) if not np.isnan(mc_p) else 'NA'}\n")
+    print(f"            Sensitivity : {sens:.4f}")
+    print(f"            Specificity : {spec:.4f}")
+    print(f"         Pos Pred Value : {ppv:.4f}")
+    print(f"         Neg Pred Value : {npv:.4f}")
+    print(f"             Prevalence : {prev:.4f}")
+    print(f"         Detection Rate : {det_rate:.4f}")
+    print(f"   Detection Prevalence : {det_prev:.4f}")
+    print(f"      Balanced Accuracy : {bal_acc:.4f}\n")
+    print("       'Positive' Class : Left\n")
 
-fpr, tpr, _ = roc_curve(y_test, pred_probs)
-fig, ax = plt.subplots(figsize=(7, 7))
-ax.plot([1, 0], [0, 1], color="darkgrey", linewidth=1)
-ax.plot(1 - fpr, tpr, color="#2980B9", linewidth=2)
-ax.axline((0, 0), (1, 1), color="grey", linestyle="--", linewidth=1)
-ax.set_xlim(1.0, 0.0)
-ax.set_ylim(0.0, 1.0)
-ax.set_xlabel("Specificity")
-ax.set_ylabel("Sensitivity")
-ax.set_title(f"ROC Curve | AUC = {round(auc_val, 4)}", fontweight="bold")
-fig.tight_layout()
-plt.savefig("plot.png")
+    cm_df = pd.DataFrame(
+        cm.T, index=ATT_LEVELS, columns=ATT_LEVELS
+    )  # rows = Predicted, cols = Actual
+    tile_plot(
+        cm_df,
+        ATT_LEVELS,
+        ["Left", "Stayed"],
+        "Actual",
+        "Predicted",
+        f"Confusion Matrix \u2014 {model_label} Prediction",
+        16,
+    )
+
+    auc_val = roc_auc_score(y_test, pred_probs)
+    print("\n--- Analysis 5: Model AUC ---")
+    print("AUC:", round(auc_val, 4), "")
+
+    fpr, tpr, _ = roc_curve(y_test, pred_probs)
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.plot([1, 0], [0, 1], color="darkgrey", linewidth=1)
+    ax.plot(1 - fpr, tpr, color="#2980B9", linewidth=2)
+    ax.axline((0, 0), (1, 1), color="grey", linestyle="--", linewidth=1)
+    ax.set_xlim(1.0, 0.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Specificity")
+    ax.set_ylabel("Sensitivity")
+    ax.set_title(f"ROC Curve{roc_tag} | AUC = {round(auc_val, 4)}", fontweight="bold")
+    fig.tight_layout()
+    plt.savefig("plot.png")
+
+    return dict(
+        Accuracy=acc,
+        Sensitivity=sens,
+        Specificity=spec,
+        BalancedAccuracy=bal_acc,
+        Kappa=kappa,
+        AUC=auc_val,
+    )
+
+
+def run_neural_network(epochs=100, batch_size=64, lr=0.01, seed=42):
+    """PyTorch MLP on the SAME balanced training data / features / test set as the decision tree."""
+    flush_stdin()
+    try:
+        import torch
+        from torch import nn
+        from torch.utils.data import DataLoader, TensorDataset
+    except ImportError:
+        print("\nPyTorch is not installed.  Install it with:  pip install torch")
+        print("(Arch: pip inside the venv, or  sudo pacman -S python-pytorch)")
+        return None
+
+    torch.manual_seed(seed)
+    cols = list(X_train.columns)
+    j = cols.index("distancefromhome")
+    mu, sd = (
+        float(X_train["distancefromhome"].mean()),
+        float(X_train["distancefromhome"].std(ddof=0)) or 1.0,
+    )
+
+    def prep(X):
+        A = X.to_numpy(dtype=np.float32).copy()
+        A[:, j] = (A[:, j] - mu) / sd  # scale distance with TRAIN statistics only
+        return torch.from_numpy(A)
+
+    Xtr, Xte = prep(X_train), prep(X_test)
+    ytr = torch.from_numpy(y_train.astype(np.float32)).unsqueeze(1)
+
+    net = nn.Sequential(
+        nn.Linear(Xtr.shape[1], 16),
+        nn.ReLU(),
+        nn.Dropout(0.1),
+        nn.Linear(16, 8),
+        nn.ReLU(),
+        nn.Linear(8, 1),
+    )
+    loss_fn = nn.BCEWithLogitsLoss()
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
+    gen = torch.Generator().manual_seed(seed)
+    loader = DataLoader(
+        TensorDataset(Xtr, ytr), batch_size=batch_size, shuffle=True, generator=gen
+    )
+
+    print("\n--- Analysis 5: Neural Network Summary (PyTorch) ---")
+    print(net)
+    n_par = sum(p.numel() for p in net.parameters())
+    print(
+        f"Neural network (n = {len(Xtr)}): inputs = {Xtr.shape[1]}, parameters = {n_par}, "
+        f"epochs = {epochs}, batch = {batch_size}, lr = {lr}"
+    )
+
+    history = []
+    for ep in range(1, epochs + 1):
+        net.train()
+        tot = 0.0
+        for xb, yb in loader:
+            opt.zero_grad()
+            loss = loss_fn(net(xb), yb)
+            loss.backward()
+            opt.step()
+            tot += loss.item() * len(xb)
+        history.append(tot / len(Xtr))
+        if ep == 1 or ep % 20 == 0:
+            print(f"  epoch {ep:>3}/{epochs}  train loss = {history[-1]:.4f}")
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(range(1, epochs + 1), history, color="#2980B9", linewidth=2)
+    theme_minimal(ax)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Binary cross-entropy loss")
+    ax.set_title("Neural Network: Training Loss", loc="left", fontweight="bold")
+    fig.tight_layout()
+    plt.savefig("plot.png")
+
+    net.eval()
+    with torch.no_grad():
+        pred_probs = torch.sigmoid(net(Xte)).numpy().ravel()
+    pred = (pred_probs >= 0.5).astype(int)
+    return evaluate_model(
+        "Neural Network", y_test, pred, pred_probs, roc_tag=" \u2014 Neural Network"
+    )
+
+
+def ask_model_choice():
+    """Menu. Env var A5_MODEL (1/2/3) skips it; non-interactive stdin keeps the original behaviour (1)."""
+    opts = {
+        "1": "Decision Tree (scikit-learn)",
+        "2": "Neural Network (PyTorch)",
+        "3": "Both - run and compare",
+    }
+    env = os.environ.get("A5_MODEL", "").strip()
+    if env in opts:
+        return env
+    if not sys.stdin.isatty():
+        return "1"
+    print("\n=== ANALYSIS 5: ATTRITION PREDICTION - choose model ===")
+    for k, v in opts.items():
+        print(f"  [{k}] {v}")
+    fd = sys.stdin.fileno()
+    try:
+        import termios
+
+        raw = not (
+            termios.tcgetattr(fd)[3] & termios.ICANON
+        )  # run_plots.py puts the tty in cbreak mode
+    except Exception:
+        raw = False
+    while True:
+        if raw:
+            print("Choice [1-3], then Enter (Default = 1): ", end="", flush=True)
+            buf = ""
+            while (
+                True
+            ):  # read the whole line here so the Enter can't leak into the first plot
+                c = os.read(fd, 1).decode(errors="ignore")
+                if c in ("\n", "\r"):
+                    break
+                if c in ("\x7f", "\b"):
+                    if buf:
+                        buf = buf[:-1]
+                        print("\b \b", end="", flush=True)
+                    continue
+                if c.isprintable():
+                    buf += c
+                    print(c, end="", flush=True)
+            print(flush=True)
+            ch = buf.strip()
+        else:
+            ch = input("Choice [1-3]: ").strip()
+        if ch == "":
+            return "1"
+        if ch in opts:
+            return ch
+        print("Invalid choice - enter 1, 2 or 3.")
+
+
+choice = ask_model_choice()
+results = {}
+
+if choice in ("1", "3"):
+    flush_stdin()
+    dt_model = DecisionTreeClassifier(
+        criterion="gini",
+        min_samples_split=20,
+        min_samples_leaf=7,
+        ccp_alpha=0.002,
+        random_state=42,
+    )
+    dt_model.fit(X_train, y_train)
+
+    print("\n--- Analysis 5: Decision Tree Summary ---")
+    print(
+        f"Decision tree (n = {len(X_train)}): depth = {dt_model.get_depth()}, "
+        f"leaves = {dt_model.get_n_leaves()}, nodes = {dt_model.tree_.node_count}"
+    )
+    imp = pd.Series(
+        dt_model.feature_importances_ * 100, index=X_train.columns
+    ).sort_values(ascending=False)
+    print("\nVariable importance:")
+    print(imp.round(0).to_string())
+    print("\nTree rules:")
+    print(export_text(dt_model, feature_names=list(X_train.columns), show_weights=True))
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    plot_tree(
+        dt_model,
+        feature_names=list(X_train.columns),
+        class_names=ATT_LEVELS,
+        filled=True,
+        impurity=False,
+        proportion=True,
+        rounded=True,
+        fontsize=8,
+        ax=ax,
+    )
+    ax.set_title("Decision Tree: Employee Attrition", fontweight="bold")
+    fig.tight_layout()
+    plt.savefig("plot.png")
+
+    pred = dt_model.predict(X_test)
+    if dt_model.n_classes_ == 2:
+        pred_probs = dt_model.predict_proba(X_test)[:, 1]
+    else:
+        pred_probs = np.full(len(X_test), float(dt_model.classes_[0] == 1))
+
+    # --- Confusion matrix & caret-style statistics (positive class = Left) ---
+    cm = confusion_matrix(y_test, pred, labels=[0, 1])
+    tn, fp, fn, tp = int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1])
+    n = tn + fp + fn + tp
+
+    def sdiv(a, b):
+        return a / b if b else float("nan")
+
+    acc = (tp + tn) / n
+    ci = stats.binomtest(tp + tn, n).proportion_ci(
+        confidence_level=0.95, method="exact"
+    )
+    nir = max(tp + fn, tn + fp) / n
+    acc_p = stats.binomtest(tp + tn, n, p=nir, alternative="greater").pvalue
+    pe = ((tp + fn) * (tp + fp) + (tn + fp) * (tn + fn)) / (n * n)
+    kappa = sdiv(acc - pe, 1 - pe)
+    if (fp + fn) > 0:
+        mc_stat = (abs(fp - fn) - 1) ** 2 / (fp + fn)
+        mc_p = stats.chi2.sf(mc_stat, 1)
+    else:
+        mc_p = float("nan")
+    sens = sdiv(tp, tp + fn)
+    spec = sdiv(tn, tn + fp)
+    ppv = sdiv(tp, tp + fp)
+    npv = sdiv(tn, tn + fn)
+    prev = (tp + fn) / n
+    det_rate = tp / n
+    det_prev = (tp + fp) / n
+    bal_acc = (sens + spec) / 2
+
+    print("\n--- Analysis 5: Confusion Matrix ---")
+    print("Confusion Matrix and Statistics\n")
+    print("          Reference")
+    print("Prediction Stayed Left")
+    print(f"    Stayed {tn:>6} {fn:>4}")
+    print(f"    Left   {fp:>6} {tp:>4}\n")
+    print(f"               Accuracy : {acc:.4f}")
+    print(f"                 95% CI : ({ci.low:.4f}, {ci.high:.4f})")
+    print(f"    No Information Rate : {nir:.4f}")
+    print(f"    P-Value [Acc > NIR] : {fmt_p(acc_p)}\n")
+    print(f"                  Kappa : {kappa:.4f}\n")
+    print(f" Mcnemar's Test P-Value : {fmt_p(mc_p) if not np.isnan(mc_p) else 'NA'}\n")
+    print(f"            Sensitivity : {sens:.4f}")
+    print(f"            Specificity : {spec:.4f}")
+    print(f"         Pos Pred Value : {ppv:.4f}")
+    print(f"         Neg Pred Value : {npv:.4f}")
+    print(f"             Prevalence : {prev:.4f}")
+    print(f"         Detection Rate : {det_rate:.4f}")
+    print(f"   Detection Prevalence : {det_prev:.4f}")
+    print(f"      Balanced Accuracy : {bal_acc:.4f}\n")
+    print("       'Positive' Class : Left\n")
+
+    cm_df = pd.DataFrame(
+        cm.T, index=ATT_LEVELS, columns=ATT_LEVELS
+    )  # rows = Predicted, cols = Actual
+    tile_plot(
+        cm_df,
+        ATT_LEVELS,
+        ["Left", "Stayed"],
+        "Actual",
+        "Predicted",
+        "Confusion Matrix \u2014 Decision Tree Prediction",
+        16,
+    )
+
+    auc_val = roc_auc_score(y_test, pred_probs)
+    print("\n--- Analysis 5: Model AUC ---")
+    print("AUC:", round(auc_val, 4), "")
+
+    fpr, tpr, _ = roc_curve(y_test, pred_probs)
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.plot([1, 0], [0, 1], color="darkgrey", linewidth=1)
+    ax.plot(1 - fpr, tpr, color="#2980B9", linewidth=2)
+    ax.axline((0, 0), (1, 1), color="grey", linestyle="--", linewidth=1)
+    ax.set_xlim(1.0, 0.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Specificity")
+    ax.set_ylabel("Sensitivity")
+    ax.set_title(f"ROC Curve | AUC = {round(auc_val, 4)}", fontweight="bold")
+    fig.tight_layout()
+    plt.savefig("plot.png")
+    results["Decision Tree"] = dict(
+        Accuracy=acc,
+        Sensitivity=sens,
+        Specificity=spec,
+        BalancedAccuracy=bal_acc,
+        Kappa=kappa,
+        AUC=auc_val,
+    )
+
+if choice in ("2", "3"):
+    results["Neural Network"] = run_neural_network()
+
+if choice == "3" and all(v is not None for v in results.values()):
+    print("\n--- Analysis 5: Model Comparison (test set, positive class = Left) ---")
+    print(pd.DataFrame(results).round(4).to_string())

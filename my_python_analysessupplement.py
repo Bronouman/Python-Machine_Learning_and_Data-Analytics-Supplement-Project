@@ -8,6 +8,10 @@ from scipy import stats
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier, plot_tree, export_text
 from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
+import json
+from typing import Literal
+
+from pydantic import BaseModel, Field, ValidationError
 
 pd.set_option("display.width", 200)
 pd.set_option("display.max_columns", 50)
@@ -903,3 +907,159 @@ if choice in ("2", "3"):
 if choice == "3" and all(v is not None for v in results.values()):
     print("\n--- Analysis 5: Model Comparison (test set, positive class = Left) ---")
     print(pd.DataFrame(results).round(4).to_string())
+
+# ----------------------------------------------------------------
+# ANALYSIS 6: AI-GENERATED ATTRITION REPORT (Google Gemini API + Pydantic)
+# ----------------------------------------------------------------
+import json
+from typing import Literal
+
+from pydantic import BaseModel, Field, ValidationError
+
+
+class AttritionReport(BaseModel):
+    executive_summary: str = Field(
+        description="2-4 sentence summary using only the provided numbers."
+    )
+    key_drivers: list[str] = Field(
+        min_length=1,
+        description="Drivers of attrition, each citing a provided statistic.",
+    )
+    recommended_model: Literal["Decision Tree", "Neural Network", "Neither"]
+    confidence_level: Literal["Low", "Medium", "High"]
+    hr_action_items: list[str] = Field(
+        min_length=1, description="Concrete, actionable HR recommendations."
+    )
+
+
+A6_SYSTEM_PROMPT = (
+    "You are a senior data scientist advising an HR leadership team on employee attrition. "
+    "Rely STRICTLY on the numbers in the provided JSON payload. Do not invent, estimate or "
+    "assume any statistic, column, or finding that is not in the payload. "
+    "If the best available model has AUC < 0.65, you MUST explicitly state in the executive_summary "
+    "that predictive power is weak, set recommended_model to 'Neither' unless one model clearly "
+    "exceeds that threshold, and set confidence_level to 'Low'. "
+    "Interpret p-values at alpha = 0.05."
+)
+
+
+def _a6_num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+print("\n--- Analysis 6: AI-Generated Attrition Report ---")
+
+a6_payload = {
+    "attrition_rate_by_maritalstatus_pct": prop_table1.round(2).to_dict(orient="index"),
+    "chi_square_maritalstatus_vs_attrition_p": _a6_num(chi_p),
+    "mann_whitney_distancefromhome_p": _a6_num(mw.pvalue),
+    "anova_f_test_p": _a6_num(f_p),
+    "model_test_metrics_positive_class_Left": {
+        name: {k: _a6_num(v) for k, v in m.items()}
+        for name, m in results.items()
+        if isinstance(m, dict)
+    },
+}
+
+try:
+    from google import genai
+    from google.genai import types
+
+    a6_key = os.environ.get("GEMINI_API_KEY")
+    if not a6_key:
+        print("GEMINI_API_KEY is not set - skipping Analysis 6.")
+    elif not a6_payload["model_test_metrics_positive_class_Left"]:
+        print(
+            "No model results available (run Analysis 5 first) - skipping Analysis 6."
+        )
+    else:
+        a6_client = genai.Client(api_key=a6_key)
+        import time
+
+        a6_cfg = types.GenerateContentConfig(
+            system_instruction=A6_SYSTEM_PROMPT,
+            temperature=0,
+            max_output_tokens=2048,
+            response_mime_type="application/json",
+            response_schema=AttritionReport,
+        )
+        a6_contents = "Analyse these results and produce the report:\n" + json.dumps(
+            a6_payload, indent=2
+        )
+        a6_models = [
+            os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
+            "gemini-3.5-flash",
+        ]
+        a6_resp = None
+        for a6_m in a6_models:
+            for attempt in range(3):
+                try:
+                    a6_resp = a6_client.models.generate_content(
+                        model=a6_m, contents=a6_contents, config=a6_cfg
+                    )
+                    break
+                except Exception as e:
+                    if getattr(e, "code", None) in (429, 500, 503, 504) and attempt < 2:
+                        print(
+                            f"{a6_m}: {e.code}, retrying in {2 ** (attempt + 1)}s..."
+                        )
+                        time.sleep(2 ** (attempt + 1))
+                        continue
+                    print(f"{a6_m} failed: {type(e).__name__}")
+                    break
+            if a6_resp is not None:
+                break
+        if a6_resp is None:
+            raise RuntimeError("All Gemini models unavailable - try again later.")
+        u = a6_resp.usage_metadata
+        if u is not None:
+            print(
+                f"Tokens - input: {u.prompt_token_count}, output: {u.candidates_token_count}"
+            )
+
+        a6_report = AttritionReport.model_validate_json(a6_resp.text)
+        print(a6_report.model_dump_json(indent=2))
+        a6_path = os.path.join(os.getcwd(), "attrition_ai_report.json")
+        with open(a6_path, "w", encoding="utf-8") as fh:
+            fh.write(a6_report.model_dump_json(indent=2))
+        print("Saved:", a6_path)
+
+        # Convert the saved JSON -> Markdown
+        with open(a6_path, encoding="utf-8") as fh:
+            a6_data = json.load(fh)
+        a6_md = [
+            "# Employee Attrition AI Report",
+            "",
+            "## Executive Summary",
+            a6_data["executive_summary"],
+            "",
+            "## Key Drivers",
+            *[f"- {d}" for d in a6_data["key_drivers"]],
+            "",
+            "## Recommended Model",
+            a6_data["recommended_model"],
+            "",
+            "## Confidence Level",
+            a6_data["confidence_level"],
+            "",
+            "## HR Action Items",
+            *[f"{i}. {a}" for i, a in enumerate(a6_data["hr_action_items"], 1)],
+            "",
+        ]
+        a6_md_path = os.path.join(os.getcwd(), "attrition_ai_report.md")
+        with open(a6_md_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(a6_md))
+        print("Saved:", a6_md_path)
+
+except ImportError:
+    print(
+        "`google-genai` package not installed - run: pip install google-genai pydantic"
+    )
+except (ValidationError, ValueError, TypeError) as e:
+    print("Model output missing or failed Pydantic validation:\n", e)
+except Exception as e:
+    # Covers google.genai.errors.APIError (429 rate limit, auth, network, etc.)
+    print(f"Analysis 6 skipped - {type(e).__name__}: {e}")

@@ -1,10 +1,12 @@
 #Packages Installation
-sudo pacman -S python python-pip python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 tk torch
+sudo pacman -Syu python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 python-pytorch python-pydantic
 
 #Alternative for Packages Installation: Virtual Environment
 python -m venv venv
 source venv/bin/activate
-pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6 torch
+pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6 torch google-genai pydantic
+export GEMINI_API_KEY = "API_KEY"
+
 #standalone analyses only numeric output NO GUI
 python my_python_analysessupplement.py # Compile
 my_python_analysessupplement.py

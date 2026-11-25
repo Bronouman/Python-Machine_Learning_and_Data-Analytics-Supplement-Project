@@ -1,5 +1,6 @@
 #Packages Installation
-sudo pacman -Syu python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 python-pytorch python-pydantic
+sudo pacman -Syu python-pandas python-numpy python-scipy python-scikit-learn python-matplotlib python-seaborn python-pyqt6 python-pytorch google-genai python-pydantic 
+transformers openai
 
 #Alternative for Packages Installation: Virtual Environment
 python -m venv venv

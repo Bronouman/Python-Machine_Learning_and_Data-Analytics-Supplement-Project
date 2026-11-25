@@ -950,6 +950,77 @@ def _a6_num(v):
         return None
 
 
+def _a6_strip(t):
+    t = t.strip()
+    for tag in ("```json", "```"):
+        t = t.removeprefix(tag)
+    return t.removesuffix("```").strip()
+
+
+def a6_openrouter_fallback(contents):
+    """OpenRouter (OpenAI-compatible) fallback. Returns (json_text, (in_tok, out_tok)) or (None, None)."""
+    import time
+
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        print("OPENROUTER_API_KEY not set - no fallback available.")
+        return None, None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("`openai` package not installed - run: pip install openai")
+        return None, None
+
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=60.0, max_retries=0)
+    schema = AttritionReport.model_json_schema()
+    schema["additionalProperties"] = False
+    models = [
+        m.strip()
+        for m in os.environ.get(
+            "OPENROUTER_MODELS",
+            "nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free,"
+            "nvidia/nemotron-3.5-lightning:free,openrouter/free",
+        ).split(",")
+        if m.strip()
+    ]
+
+    def call(model, use_schema):
+        sys_p, kw = A6_SYSTEM_PROMPT, {}
+        if use_schema:
+            kw["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "AttritionReport", "strict": True, "schema": schema},
+            }
+        else:  # model has no structured-output support: put the schema in the prompt instead
+            sys_p += "\nReturn ONLY valid JSON (no markdown) matching this JSON Schema:\n" + json.dumps(schema)
+        return client.chat.completions.create(
+            model=model,
+            temperature=0,
+            max_tokens=4096,
+            messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": contents}],
+            extra_headers={"X-OpenRouter-Title": "Attrition Analysis"},
+            **kw,
+        )
+
+    for m in models:
+        for use_schema in (True, False):
+            for attempt in range(2):
+                try:
+                    r = call(m, use_schema)
+                    txt = r.choices[0].message.content
+                    if not txt:
+                        raise ValueError("empty response")
+                    print(f"OpenRouter fallback used: {m}")
+                    return txt, ((r.usage.prompt_tokens, r.usage.completion_tokens) if r.usage else None)
+                except Exception as e:
+                    if getattr(e, "status_code", None) in (429, 500, 502, 503, 504) and attempt == 0:
+                        time.sleep(3)
+                        continue
+                    print(f"{m} ({'schema' if use_schema else 'prompt-only'}) failed: {type(e).__name__}")
+                    break
+    return None, None
+
+
 print("\n--- Analysis 6: AI-Generated Attrition Report ---")
 
 a6_payload = {
@@ -969,14 +1040,14 @@ try:
     from google.genai import types
 
     a6_key = os.environ.get("GEMINI_API_KEY")
-    if not a6_key:
-        print("GEMINI_API_KEY is not set - skipping Analysis 6.")
+    if not a6_key and not os.environ.get("OPENROUTER_API_KEY"):
+        print("Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set - skipping Analysis 6.")
     elif not a6_payload["model_test_metrics_positive_class_Left"]:
         print(
             "No model results available (run Analysis 5 first) - skipping Analysis 6."
         )
     else:
-        a6_client = genai.Client(api_key=a6_key)
+        a6_client = genai.Client(api_key=a6_key) if a6_key else None
         import time
 
         a6_cfg = types.GenerateContentConfig(
@@ -989,10 +1060,11 @@ try:
         a6_contents = "Analyse these results and produce the report:\n" + json.dumps(
             a6_payload, indent=2
         )
-        a6_models = [
-            os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
-            "gemini-3.5-flash",
-        ]
+        a6_models = (
+            []
+            if a6_client is None
+            else [os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"), "gemini-3.5-flash"]
+        )
         a6_resp = None
         for a6_m in a6_models:
             for attempt in range(3):
@@ -1012,15 +1084,21 @@ try:
                     break
             if a6_resp is not None:
                 break
-        if a6_resp is None:
-            raise RuntimeError("All Gemini models unavailable - try again later.")
-        u = a6_resp.usage_metadata
-        if u is not None:
-            print(
-                f"Tokens - input: {u.prompt_token_count}, output: {u.candidates_token_count}"
-            )
+        a6_text, a6_tok = None, None
+        if a6_resp is not None:
+            a6_text = a6_resp.text
+            u = a6_resp.usage_metadata
+            if u is not None:
+                a6_tok = (u.prompt_token_count, u.candidates_token_count)
+        else:
+            print("Gemini unavailable - trying OpenRouter fallback...")
+            a6_text, a6_tok = a6_openrouter_fallback(a6_contents)
+        if not a6_text:
+            raise RuntimeError("Gemini and OpenRouter both unavailable - try again later.")
+        if a6_tok:
+            print(f"Tokens - input: {a6_tok[0]}, output: {a6_tok[1]}")
 
-        a6_report = AttritionReport.model_validate_json(a6_resp.text)
+        a6_report = AttritionReport.model_validate_json(_a6_strip(a6_text))
         print(a6_report.model_dump_json(indent=2))
         a6_path = os.path.join(os.getcwd(), "attrition_ai_report.json")
         with open(a6_path, "w", encoding="utf-8") as fh:
@@ -1063,3 +1141,47 @@ except (ValidationError, ValueError, TypeError) as e:
 except Exception as e:
     # Covers google.genai.errors.APIError (429 rate limit, auth, network, etc.)
     print(f"Analysis 6 skipped - {type(e).__name__}: {e}")
+
+
+# ----------------------------------------------------------------
+# ANALYSIS 7: HUGGING FACE EMBEDDINGS - MATCH KEY DRIVERS TO HR ACTIONS
+# ----------------------------------------------------------------
+print("\n--- Analysis 7: Hugging Face Embeddings (Driver -> Action Matching) ---")
+
+try:
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoModel, AutoTokenizer
+
+    a7_json = os.path.join(os.getcwd(), "attrition_ai_report.json")
+    if not os.path.exists(a7_json):
+        print("attrition_ai_report.json not found (run Analysis 6 first) - skipping Analysis 7.")
+    else:
+        with open(a7_json, encoding="utf-8") as fh:
+            a7_rep = json.load(fh)
+        a7_drivers, a7_actions = a7_rep["key_drivers"], a7_rep["hr_action_items"]
+
+        a7_name = "sentence-transformers/all-MiniLM-L6-v2"
+        a7_dev = "cuda" if torch.cuda.is_available() else "cpu"
+        a7_tok = AutoTokenizer.from_pretrained(a7_name)
+        a7_mod = AutoModel.from_pretrained(a7_name).to(a7_dev).eval()
+
+        def a7_embed(texts):
+            enc = a7_tok(texts, padding=True, truncation=True, max_length=256, return_tensors="pt").to(a7_dev)
+            with torch.no_grad():
+                out = a7_mod(**enc).last_hidden_state
+            mask = enc["attention_mask"].unsqueeze(-1).float()
+            mean = (out * mask).sum(1) / mask.sum(1).clamp(min=1e-9)  # mean pooling
+            return F.normalize(mean, p=2, dim=1)  # unit vectors -> dot product = cosine
+
+        a7_sim = (a7_embed(a7_drivers) @ a7_embed(a7_actions).T).cpu().numpy()
+        print(f"Model: {a7_name} | device: {a7_dev} | embedding dim: {a7_mod.config.hidden_size}")
+        for i, d in enumerate(a7_drivers):
+            j = int(a7_sim[i].argmax())
+            print(f"\nDriver : {d}\nBest action (cosine = {a7_sim[i, j]:.3f}): {a7_actions[j]}")
+
+except ImportError:
+    print("`transformers`/`torch` not installed - run: pip install transformers")
+except Exception as e:
+    # Covers offline model download, missing keys in the JSON, etc.
+    print(f"Analysis 7 skipped - {type(e).__name__}: {e}")

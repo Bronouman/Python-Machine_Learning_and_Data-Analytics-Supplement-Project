@@ -4,8 +4,9 @@ sudo pacman -Syu python-pandas python-numpy python-scipy python-scikit-learn pyt
 #Alternative for Packages Installation: Virtual Environment
 python -m venv venv
 source venv/bin/activate
-pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6 torch google-genai pydantic
-export GEMINI_API_KEY = "API_KEY"
+pip install pandas numpy scipy scikit-learn matplotlib seaborn PyQt6 torch google-genai pydantic transformers openai
+export GEMINI_API_KEY="API_KEY" #Get from https://aistudio.google.com/
+export export OPENROUTER_API_KEY="your-key" #Get From https://openrouter.ai/
 
 #standalone analyses only numeric output NO GUI
 python my_python_analysessupplement.py # Compile
